@@ -1,3 +1,4 @@
+# vim: set sw=2 expandtab:
 {
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
 
@@ -27,11 +28,11 @@
             source = ./my_script.sh;
             mode = "755";
           };
-	
-	homeFiles.".my_aliases" = {
-  	source = ./my_aliases;
-  	mode = "644";
-	};
+
+          homeFiles.".my_aliases" = {
+            source = ./my_aliases;
+            mode = "644";
+          };
         };
 
         john = {
@@ -112,9 +113,9 @@
           echo "Done."
         '';
 
-        default = pkgs.writeShellScriptBin "noop" ''
-          echo "Use: nix build .#nixosConfigurations.vm.config.system.build.vm"
-        '';
+        # default = pkgs.writeShellScriptBin "noop" ''
+        #   echo "Use: nix build .#nixosConfigurations.vm.config.system.build.vm"
+        # '';
       };
 
       apps.${system}.default = {

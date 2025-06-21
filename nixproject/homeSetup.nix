@@ -33,7 +33,7 @@ let
     # 3. chmod ...  → по избор, chmod
     ''
       echo "[homeSetup] Linking $HOME/${name} -> ${target}" >> $HOME/.home-setup.log
-      ln -sf ${target} "$HOME/${name}"${modePart}
+      ln -sf ${target} "$HOME/${name}"${modePart} >> $HOME/.home-setup.log 2>&1
     '';
    in
 
@@ -84,19 +84,23 @@ let
     };
   };
 
-  #  Какво да се изпълни при активация на потребителя
-  config = {
-    system.userActivationScripts = 
+ #  Какво да се изпълни при активация на потребителя
+config = {
+  system.userActivationScripts = 
     lib.flip lib.mapAttrs' config.homeSetups (name: { userName, homeFiles }:
-    lib.nameValuePair "setupHome_${userName}" {
-      text = ''
-        echo "Creating of files in $HOME for ${userName}"
-        if [ $USER = ${userName} ]; then
-          ${concatStringsSep "\n" (mapAttrsToList (generateLink userName) homeFiles)}
-        fi
-        echo "Done for ${userName}"
-      '';
-      deps = [];
-    });
-  };
+      lib.nameValuePair "setupHome_${userName}" {
+        text = ''
+          echo "Creating of files in $HOME for ${userName}"
+          if [ "$(whoami)" != "${userName}" ]; then
+	  exit 0
+	  fi 
+
+	  echo "[homeSetup] Creating files for ${userName} in $HOME"
+            ${concatStringsSep "\n" (mapAttrsToList (generateLink userName) homeFiles)}
+          
+          echo "Done for ${userName}"
+        '';
+        deps = [];
+      });
+};
 }
