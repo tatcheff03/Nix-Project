@@ -4,15 +4,9 @@ with lib;
 with lib.types;
 
 let
-  # всички файловe зададени от потребителя в homeFiles
-  cfg = config.homeFiles;
-
   # Функция: символна връзка + chmod
-  generateLink = name: file:
+  generateLink = uname: name: file:
     let
-      # извлича се userName 
-      uname = config.userName or "unknown";
-
       # Ако има "text", създаваме нов файл с такова съдържание
       target =
         if file ? text then
@@ -41,58 +35,68 @@ let
       echo "[homeSetup] Linking $HOME/${name} -> ${target}" >> $HOME/.home-setup.log
       ln -sf ${target} "$HOME/${name}"${modePart}
     '';
-in
+   in
 
-{
-  options = {
-    #  Задава се за кой потребител е този setup
-    userName = mkOption {
-      type = str;
-      description = "Username for whom the home files are being setup.";
-    };
-
-    #  Списък от файлове за добавяне в $HOME
-    homeFiles = mkOption {
-      type = attrsOf (submodule {
+	{
+ 	options = {
+    	homeSetups = mkOption {
+	type = attrsOf (submodule ({ name, ... }: {
         options = {
-          #  Подаване на съдържание директно
-          text = mkOption {
-            type = nullOr str;
-            default = null;
-            description = "Content of the file.";
-          };
-
-          #  Използване на съществуващ файл
-          source = mkOption {
-            type = nullOr path;
-            default = null;
-            description = "Path to an existing file.";
-          };
-
-          #  Права върху файла (напр. '600')
-          mode = mkOption {
+          #  Задава се за кой потребител е този setup
+          userName = mkOption {
             type = str;
-            default = "644";
-            description = "Rights for the file (e.g., '600', '644', '755').";
+            description = "Username for whom the home files are being setup.";
+            default = name;
+          };
+
+          #  Списък от файлове за добавяне в $HOME
+          homeFiles = mkOption {
+            type = attrsOf (submodule {
+              options = {
+                #  Подаване на съдържание директно
+                text = mkOption {
+                  type = nullOr str;
+                  default = null;
+                  description = "Content of the file.";
+                };
+
+                #  Използване на съществуващ файл
+                source = mkOption {
+                type = nullOr path;
+		default = null;
+                description = "Path to an existing file.";
+                };
+
+                #  Права върху файла (напр. '600')
+                mode = mkOption {
+                  type = str;
+                  default = "644";
+                  description = "Rights for the file (e.g., '600', '644', '755').";
+                };
+              };
+            });
+
+            default = {};
+            description = "Map of files to link into the user's $HOME.";
           };
         };
-      });
-
-      default = {};
-      description = "Map of files to link into the user's $HOME.";
+      }));
     };
   };
 
   #  Какво да се изпълни при активация на потребителя
   config = {
-    system.userActivationScripts."setupHome_${config.userName}" = {
+    system.userActivationScripts = 
+    lib.flip lib.mapAttrs' config.homeSetups (name: { userName, homeFiles }:
+    lib.nameValuePair "setupHome_${userName}" {
       text = ''
-        echo "Creating of files in \$HOME"
-        ${concatStringsSep "\n" (mapAttrsToList generateLink cfg)}
-        echo "Done"
+        echo "Creating of files in $HOME for ${userName}"
+        if [ $USER = ${userName} ]; then
+          ${concatStringsSep "\n" (mapAttrsToList (generateLink userName) homeFiles)}
+        fi
+        echo "Done for ${userName}"
       '';
       deps = [];
-    };
+    });
   };
 }
-

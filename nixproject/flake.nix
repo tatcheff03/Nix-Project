@@ -27,6 +27,11 @@
             source = ./my_script.sh;
             mode = "755";
           };
+	
+	homeFiles.".my_aliases" = {
+  	source = ./my_aliases;
+  	mode = "644";
+	};
         };
 
         john = {
@@ -45,37 +50,8 @@
         };
       };
 
-      # импортиране на homeSetup модула
-      homeSetupTestUser = import ./homeSetup.nix {
-        config = {
-          userName = "testuser";
-          homeFiles = userConfigs.testuser.homeFiles;
-        };
-        inherit lib pkgs;
-      };
-
-      homeSetupJohn = import ./homeSetup.nix {
-        config = {
-          userName = "john";
-          homeFiles = userConfigs.john.homeFiles;
-        };
-        inherit lib pkgs;
-      };
-    in
-    {
-      # при nix run .#activate
-      packages.${system}.activate =
-        pkgs.writeShellScriptBin "activate-home"
-          homeSetupTestUser.config.system.userActivationScripts.setupHome.text;
-
-      # при nix run .#
-      apps.${system}.default = {
-        type = "app";
-        program =
-          "${pkgs.writeShellScriptBin "activate-home" homeSetupTestUser.config.system.userActivationScripts.setupHome.text}/bin/activate-home";
-      };
-
-      #  За импорт в други проекти (напр. модул в NixOS)
+    in {
+      # За import в други системи
       nixosModules = {
         homeSetup = ./homeSetup.nix;
         systemExtras = ./systemExtras.nix;
@@ -84,13 +60,23 @@
       # Конфигурация на VM
       nixosConfigurations.vm = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
-
         modules = [
-          #  Глобални неща
           self.nixosModules.systemExtras
-
-          #  Потребители  
+          self.nixosModules.homeSetup
           {
+            # Подаване на потребители и техните homeFiles
+            homeSetups = {
+              john = {
+                userName = "john";
+                homeFiles = userConfigs.john.homeFiles;
+              };
+              testuser = {
+                userName = "testuser";
+                homeFiles = userConfigs.testuser.homeFiles;
+              };
+            };
+
+            # Дефиниране на потребители
             users.users.testuser = {
               isNormalUser = true;
               initialPassword = "test";
@@ -104,16 +90,36 @@
               extraGroups = [ "wheel" ];
             };
 
-            # изпълнява setup скрипта за всеки user
-            system.userActivationScripts = {
-              setupHome_testuser.text = homeSetupTestUser.config.system.userActivationScripts."setupHome_testuser".text;
-              setupHome_john.text = homeSetupJohn.config.system.userActivationScripts."setupHome_john".text;
-            };
-
-            # (декларация на съвместимост)
+            # системната версия
             system.stateVersion = "24.11";
           }
         ];
+      };
+
+      # Дефиниции на допълнителни пакети (напр. nix run .#activate-testuser)
+      packages.${system} = {
+        activate-testuser = pkgs.writeShellScriptBin "activate-home-testuser" ''
+          echo "Setting up home for testuser..."
+          ln -sf ${userConfigs.testuser.homeFiles."my_script.sh".source} "$HOME/my_script.sh"
+          chmod ${userConfigs.testuser.homeFiles."my_script.sh".mode} "$HOME/my_script.sh"
+          echo "Done."
+        '';
+
+        activate-john = pkgs.writeShellScriptBin "activate-home-john" ''
+          echo "Setting up home for john..."
+          ln -sf ${userConfigs.john.homeFiles."my_script.sh".source} "$HOME/my_script.sh"
+          chmod ${userConfigs.john.homeFiles."my_script.sh".mode} "$HOME/my_script.sh"
+          echo "Done."
+        '';
+
+        default = pkgs.writeShellScriptBin "noop" ''
+          echo "Use: nix build .#nixosConfigurations.vm.config.system.build.vm"
+        '';
+      };
+
+      apps.${system}.default = {
+        type = "app";
+        program = "${self.packages.${system}.default}/bin/noop";
       };
     };
 }
