@@ -9,12 +9,12 @@ let
     let
       # Ако има "text", създаваме нов файл с такова съдържание
       target =
-        if file ? text then
+        if file ? text && file.text != null then
           # генерирано съдържание със специфично име
           pkgs.writeText "homefile-${uname}-${baseNameOf name}" file.text
 
         # Ако имаме "source", използваме съществуващ файл
-        else if file ? source then
+        else if file ? source && file.source != null then
           file.source
 
         # Ако липсват и двете –> грешка
