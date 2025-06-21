@@ -7,15 +7,19 @@ let
   # всички файловe зададени от потребителя в homeFiles
   cfg = config.homeFiles;
 
-  # Функция символна връзка + chmod 
+  # Функция: символна връзка + chmod
   generateLink = name: file:
     let
+      # извлича се userName 
+      uname = config.userName or "unknown";
+
       # Ако има "text", създаваме нов файл с такова съдържание
       target =
         if file ? text then
-          pkgs.writeText "homefile-${baseNameOf name}" file.text
+          # генерирано съдържание със специфично име
+          pkgs.writeText "homefile-${uname}-${baseNameOf name}" file.text
 
-        # Ако имаме "source", използваме съществ. файл
+        # Ако имаме "source", използваме съществуващ файл
         else if file ? source then
           file.source
 
@@ -30,51 +34,58 @@ let
     in
 
     # Команди:
-    # 1. ln -sf ... →  символна връзка
-    # 2. chmod ...  → по избор, chmod
+    # 1. echo → логване в .home-setup.log
+    # 2. ln -sf ... → символна връзка
+    # 3. chmod ...  → по избор, chmod
     ''
-      echo "[homeSetup] Linking $HOME/${name}" >> $HOME/.home-setup.log
+      echo "[homeSetup] Linking $HOME/${name} -> ${target}" >> $HOME/.home-setup.log
       ln -sf ${target} "$HOME/${name}"${modePart}
     '';
 in
 
 {
-  # какви настройки (options) може да се подават
-  options.homeFiles = mkOption {
-    #подават се списък от файлове с text/source/mode
-    type = attrsOf (submodule {
-      options = {
-        # подава се "text", генерира се съдържанието
-        text = mkOption {
-          type = nullOr str;
-          default = null;
-          description = "Content of file.";
-        };
+  options = {
+    #  Задава се за кой потребител е този setup
+    userName = mkOption {
+      type = str;
+      description = "Username for whom the home files are being setup.";
+    };
 
-        # подава се "source", файлът сочи към друг файл
-        source = mkOption {
-          type = nullOr path;
-          default = null;
-          description = "Path to existing file.";
-        };
+    #  Списък от файлове за добавяне в $HOME
+    homeFiles = mkOption {
+      type = attrsOf (submodule {
+        options = {
+          #  Подаване на съдържание директно
+          text = mkOption {
+            type = nullOr str;
+            default = null;
+            description = "Content of the file.";
+          };
 
-        # Ако подаде "mode" -> chmod (например '600')
-        mode = mkOption {
-          type =  str;
-          default = "644";
-          description = "Rights for file (ex. '600', '644','755').";
-        };
-      };
-    });
+          #  Използване на съществуващ файл
+          source = mkOption {
+            type = nullOr path;
+            default = null;
+            description = "Path to an existing file.";
+          };
 
-    # По подразбиране няма файлове
-    default = {};
-    description = "Файлове -> добавят в $HOME като връзки.";
+          #  Права върху файла (напр. '600')
+          mode = mkOption {
+            type = str;
+            default = "644";
+            description = "Rights for the file (e.g., '600', '644', '755').";
+          };
+        };
+      });
+
+      default = {};
+      description = "Map of files to link into the user's $HOME.";
+    };
   };
 
-  # какво да се изпълни при активация
+  #  Какво да се изпълни при активация на потребителя
   config = {
-    system.userActivationScripts.setupHome = {
+    system.userActivationScripts."setupHome_${config.userName}" = {
       text = ''
         echo "Creating of files in \$HOME"
         ${concatStringsSep "\n" (mapAttrsToList generateLink cfg)}

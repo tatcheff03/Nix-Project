@@ -7,66 +7,110 @@
       pkgs = import nixpkgs { inherit system; };
       lib = pkgs.lib;
 
-      # Конфигурация homeFiles
-      config = {
-        homeFiles.".bashrc" = {
-          text = ''
-            export PATH=$PATH:$HOME/mybin
-            echo "Hello from symlink bash"
-          '';
-          mode = "600";
+      # Конфигурации на потребители
+      userConfigs = {
+        testuser = {
+          homeFiles.".bashrc" = {
+            text = ''
+              export PATH=$PATH:$HOME/mybin
+              echo "Hello from testuser!"
+            '';
+            mode = "600";
+          };
+
+          homeFiles.".vimrc" = {
+            text = "set number\nsyntax on";
+            mode = "644";
+          };
+
+          homeFiles."my_script.sh" = {
+            source = ./my_script.sh;
+            mode = "755";
+          };
         };
 
-        homeFiles.".vimrc" = {
-          text = "set number\nsyntax on";
-          mode = "644";
-        };
+        john = {
+          homeFiles.".bashrc" = {
+            text = ''
+              export PATH=$PATH:$HOME/mybin
+              echo "Hey John!"
+            '';
+            mode = "600";
+          };
 
-        homeFiles."my_script.sh" = {
-          source = ./my_script.sh;
-          mode = "755";
+          homeFiles."my_script.sh" = {
+            source = ./my_script.sh;
+            mode = "755";
+          };
         };
       };
 
-      #  модула и генериране на setup script
-      homeSetup = import ./homeSetup.nix { inherit config lib pkgs; };
-      setupScript = pkgs.writeShellScriptBin "activate-home" homeSetup.config.system.userActivationScripts.setupHome.text;
+      # импортиране на homeSetup модула
+      homeSetupTestUser = import ./homeSetup.nix {
+        config = {
+          userName = "testuser";
+          homeFiles = userConfigs.testuser.homeFiles;
+        };
+        inherit lib pkgs;
+      };
+
+      homeSetupJohn = import ./homeSetup.nix {
+        config = {
+          userName = "john";
+          homeFiles = userConfigs.john.homeFiles;
+        };
+        inherit lib pkgs;
+      };
     in
     {
-      # директно изпълнение: nix run .#activate
-      packages.${system}.activate = setupScript;
+      # при nix run .#activate
+      packages.${system}.activate =
+        pkgs.writeShellScriptBin "activate-home"
+          homeSetupTestUser.config.system.userActivationScripts.setupHome.text;
 
-      # потребители: nix run github:angelubuntu/home-setup
+      # при nix run .#
       apps.${system}.default = {
         type = "app";
-        program = "${setupScript}/bin/activate-home";
+        program =
+          "${pkgs.writeShellScriptBin "activate-home" homeSetupTestUser.config.system.userActivationScripts.setupHome.text}/bin/activate-home";
       };
 
-      legacyPackages.${system}.setupScript = setupScript;
-
-      # импорт в други nixosConfigurations
+      #  За импорт в други проекти (напр. модул в NixOS)
       nixosModules = {
         homeSetup = ./homeSetup.nix;
         systemExtras = ./systemExtras.nix;
       };
 
+      # Конфигурация на VM
       nixosConfigurations.vm = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
 
-        modules = let
-          extras = import self.nixosModules.systemExtras {
-            inherit config pkgs lib setupScript;
-          };
-        in [
-          extras
-          self.nixosModules.homeSetup
+        modules = [
+          #  Глобални неща
+          self.nixosModules.systemExtras
+
+          #  Потребители  
           {
             users.users.testuser = {
               isNormalUser = true;
               initialPassword = "test";
               extraGroups = [ "wheel" ];
+              packages = [ pkgs.vim ];
             };
 
+            users.users.john = {
+              isNormalUser = true;
+              initialPassword = "john1";
+              extraGroups = [ "wheel" ];
+            };
+
+            # изпълнява setup скрипта за всеки user
+            system.userActivationScripts = {
+              setupHome_testuser.text = homeSetupTestUser.config.system.userActivationScripts."setupHome_testuser".text;
+              setupHome_john.text = homeSetupJohn.config.system.userActivationScripts."setupHome_john".text;
+            };
+
+            # (декларация на съвместимост)
             system.stateVersion = "24.11";
           }
         ];
