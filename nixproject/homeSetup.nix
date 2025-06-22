@@ -1,106 +1,78 @@
-{ config, lib, pkgs, ... }:
+		{ config, lib, pkgs, ... }:
 
-with lib;
-with lib.types;
+		with lib;
+		with lib.types;
 
-let
-  # Функция: символна връзка + chmod
-  generateLink = uname: name: file:
-    let
-      # Ако има "text", създаваме нов файл с такова съдържание
-      target =
-        if file ? text && file.text != null then
-          # генерирано съдържание със специфично име
-          pkgs.writeText "homefile-${uname}-${baseNameOf name}" file.text
+		let
+		  # Функция: символна връзка + chmod
+		  generateLink = uname: fileName: file:
+		    let
+		      homePath = "/home/${uname}/${fileName}";
 
-        # Ако имаме "source", използваме съществуващ файл
-        else if file ? source && file.source != null then
-          file.source
+		      # Определяне на източника: текст или съществуващ файл
+		      target =
+			if file?text && file.text != null then
+			  pkgs.writeText "homefile-${uname}-${baseNameOf fileName}" file.text
+			else if file?source && file.source != null then
+			  file.source
+			else
+			  throw "homeFiles.${fileName} трябва да има text или source.";
 
-        # Ако липсват и двете –> грешка
-        else
-          throw "homeFiles.${name} трябва да има text или source.";
+		      isStorePath = lib.hasPrefix "/nix/store" (toString target);
+		      modeLine = if file?mode && !isStorePath then
+			"chmod ${file.mode} \"${homePath}\""
+		      else
+			"";
+		    in
+		      ''
+			echo "[homeSetup] Linking ${homePath} -> ${target}" >> /home/${uname}/.home-setup.log
+			ln -sf ${target} "${homePath}"
+			${modeLine}
+		      '';
 
-      # зададен режим (например '600'), добавяме chmod 
-      modePart =
-        if file ? mode then "\nchmod ${file.mode} \"$HOME/${name}\""
-        else "";
-    in
+		in
+		{
+		  options.homeSetups = mkOption {
+		    type = attrsOf (submodule ({ name, ... }: {
+		      options = {
+			# Параметри за всеки потребител
+			userName = mkOption {
+			  type        = str;
+			  description = "Username for whom the home files are being setup.";
+			  default     = name;
+			};
+			homeFiles = mkOption {
+			  type = attrsOf (submodule {
+			    options = {
+			      text   = mkOption { type = nullOr str; default = null; };
+			      source = mkOption { type = nullOr path; default = null; };
+			      mode   = mkOption { type = str;      default = "644"; };
+			    };
+			  });
+			  default     = {};
+			  description = "Map of files to link into the user's $HOME.";
+			};
+		      };
+		    }));
+		  };
 
-    # Команди:
-    # 1. echo → логване в .home-setup.log
-    # 2. ln -sf ... → символна връзка
-    # 3. chmod ...  → по избор, chmod
-    ''
-      echo "[homeSetup] Linking $HOME/${name} -> ${target}" >> $HOME/.home-setup.log
-      ln -sf ${target} "$HOME/${name}"${modePart} >> $HOME/.home-setup.log 2>&1
-    '';
-   in
+		  config.system.userActivationScripts =
+		    lib.flip lib.mapAttrs' config.homeSetups (user: { userName, homeFiles }: lib.nameValuePair ("setupHome_${userName}") {
+		      text = ''
+			set -e
+			echo "[homeSetup] Running for ${userName}" >> /home/${userName}/.home-setup.log
 
-	{
- 	options = {
-    	homeSetups = mkOption {
-	type = attrsOf (submodule ({ name, ... }: {
-        options = {
-          #  Задава се за кой потребител е този setup
-          userName = mkOption {
-            type = str;
-            description = "Username for whom the home files are being setup.";
-            default = name;
-          };
+			  # Линкваме всички файлове, включително .bashrc
+			 ${concatStringsSep "\n"
+		  	(mapAttrsToList
+		    	(name: value:
+		      	generateLink userName name value)
+		    	homeFiles)
+			}
 
-          #  Списък от файлове за добавяне в $HOME
-          homeFiles = mkOption {
-            type = attrsOf (submodule {
-              options = {
-                #  Подаване на съдържание директно
-                text = mkOption {
-                  type = nullOr str;
-                  default = null;
-                  description = "Content of the file.";
-                };
+			echo "[homeSetup] Done for ${userName}" >> /home/${userName}/.home-setup.log
+		      '';
+		      deps = [];
+		    });
 
-                #  Използване на съществуващ файл
-                source = mkOption {
-                type = nullOr path;
-		default = null;
-                description = "Path to an existing file.";
-                };
-
-                #  Права върху файла (напр. '600')
-                mode = mkOption {
-                  type = str;
-                  default = "644";
-                  description = "Rights for the file (e.g., '600', '644', '755').";
-                };
-              };
-            });
-
-            default = {};
-            description = "Map of files to link into the user's $HOME.";
-          };
-        };
-      }));
-    };
-  };
-
- #  Какво да се изпълни при активация на потребителя
-config = {
-  system.userActivationScripts = 
-    lib.flip lib.mapAttrs' config.homeSetups (name: { userName, homeFiles }:
-      lib.nameValuePair "setupHome_${userName}" {
-        text = ''
-          echo "Creating of files in $HOME for ${userName}"
-          if [ "$(whoami)" != "${userName}" ]; then
-	  exit 0
-	  fi 
-
-	  echo "[homeSetup] Creating files for ${userName} in $HOME"
-            ${concatStringsSep "\n" (mapAttrsToList (generateLink userName) homeFiles)}
-          
-          echo "Done for ${userName}"
-        '';
-        deps = [];
-      });
-};
-}
+		}

@@ -3,125 +3,134 @@
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
 
   outputs = { self, nixpkgs }:
-    let
-      system = "x86_64-linux";
-      pkgs = import nixpkgs { inherit system; };
-      lib = pkgs.lib;
+  let
+    system = "x86_64-linux";
+    pkgs   = import nixpkgs { inherit system; };
+    lib    = pkgs.lib;
 
-      # Конфигурации на потребители
-      userConfigs = {
-        testuser = {
-          homeFiles.".bashrc" = {
+    # потребителски файлове
+    userConfigs = {
+      testuser = {
+        homeFiles = {
+          # Съдържание на ~/.bashrc за testuser
+          ".bashrc" = {
             text = ''
-              export PATH=$PATH:$HOME/mybin
+              # Първоначална настройка при първо влизане
+              if [ ! -f "$HOME/.home-setup.done" ]; then
+                /etc/profiles/per-user/$USER/bin/setupHome_$USER
+                touch "$HOME/.home-setup.done"
+              fi
               echo "Hello from testuser!"
             '';
-            mode = "600";
-          };
+            mode = "600";             
+            };
 
-          homeFiles.".vimrc" = {
-            text = "set number\nsyntax on";
-            mode = "644";
-          };
+          # Прост vim конфиг
+          ".vimrc" = { text = "set number\nsyntax on"; mode = "644"; };
 
-          homeFiles."my_script.sh" = {
-            source = ./my_script.sh;
-            mode = "755";
-          };
+          # лесен скрипт
+          "my_script.sh" = { source = ./my_script.sh; mode = "755"; };
 
-          homeFiles.".my_aliases" = {
-            source = ./my_aliases;
-            mode = "644";
-          };
+          # Алиаси
+          ".my_aliases" = { source = ./my_aliases; mode = "644"; };
         };
+      };
 
-        john = {
-          homeFiles.".bashrc" = {
+      john = {
+        homeFiles = {
+          # ~/.bashrc за John
+          ".bashrc" = {
             text = ''
-              export PATH=$PATH:$HOME/mybin
+              if [ ! -f "$HOME/.home-setup.done" ]; then
+                /etc/profiles/per-user/$USER/bin/setupHome_$USER
+                touch "$HOME/.home-setup.done"
+              fi
               echo "Hey John!"
             '';
             mode = "600";
           };
 
-          homeFiles."my_script.sh" = {
-            source = ./my_script.sh;
-            mode = "755";
-          };
+          # същия скрипт за John
+          "my_script.sh" = { source = ./my_script.sh; mode = "755"; };
         };
       };
-
-    in {
-      # За import в други системи
-      nixosModules = {
-        homeSetup = ./homeSetup.nix;
-        systemExtras = ./systemExtras.nix;
-      };
-
-      # Конфигурация на VM
-      nixosConfigurations.vm = nixpkgs.lib.nixosSystem {
-        system = "x86_64-linux";
-        modules = [
-          self.nixosModules.systemExtras
-          self.nixosModules.homeSetup
-          {
-            # Подаване на потребители и техните homeFiles
-            homeSetups = {
-              john = {
-                userName = "john";
-                homeFiles = userConfigs.john.homeFiles;
-              };
-              testuser = {
-                userName = "testuser";
-                homeFiles = userConfigs.testuser.homeFiles;
-              };
-            };
-
-            # Дефиниране на потребители
-            users.users.testuser = {
-              isNormalUser = true;
-              initialPassword = "test";
-              extraGroups = [ "wheel" ];
-              packages = [ pkgs.vim ];
-            };
-
-            users.users.john = {
-              isNormalUser = true;
-              initialPassword = "john1";
-              extraGroups = [ "wheel" ];
-            };
-
-            # системната версия
-            system.stateVersion = "24.11";
-          }
-        ];
-      };
-
-      # Дефиниции на допълнителни пакети (напр. nix run .#activate-testuser)
-      packages.${system} = {
-        activate-testuser = pkgs.writeShellScriptBin "activate-home-testuser" ''
-          echo "Setting up home for testuser..."
-          ln -sf ${userConfigs.testuser.homeFiles."my_script.sh".source} "$HOME/my_script.sh"
-          chmod ${userConfigs.testuser.homeFiles."my_script.sh".mode} "$HOME/my_script.sh"
-          echo "Done."
-        '';
-
-        activate-john = pkgs.writeShellScriptBin "activate-home-john" ''
-          echo "Setting up home for john..."
-          ln -sf ${userConfigs.john.homeFiles."my_script.sh".source} "$HOME/my_script.sh"
-          chmod ${userConfigs.john.homeFiles."my_script.sh".mode} "$HOME/my_script.sh"
-          echo "Done."
-        '';
-
-        # default = pkgs.writeShellScriptBin "noop" ''
-        #   echo "Use: nix build .#nixosConfigurations.vm.config.system.build.vm"
-        # '';
-      };
-
-      apps.${system}.default = {
-        type = "app";
-        program = "${self.packages.${system}.default}/bin/noop";
-      };
     };
+
+  in
+  {
+    nixosModules = {
+      systemExtras = ./systemExtras.nix;      # системни настройки
+      homeSetup    = ./homeSetup.nix;         # home-setup модула
+    };
+
+    nixosConfigurations.vm = nixpkgs.lib.nixosSystem {
+      inherit system;
+      modules = [
+        self.nixosModules.systemExtras
+        self.nixosModules.homeSetup           # Зареждаме homeSetup
+        {
+          # Подаваме конфигурации
+          homeSetups = userConfigs;
+
+          # Дефинираме потребители
+          users.users.testuser = {
+            isNormalUser    = true;
+            initialPassword = "test";
+            extraGroups     = [ "wheel" ];
+            packages        = [ pkgs.vim ];  
+            };
+          users.users.john = {
+            isNormalUser    = true;
+            initialPassword = "john1";
+            extraGroups     = [ "wheel" ];
+          };
+
+          # Коп. всички дефинирани homeFiles в /etc/home/…
+          virtualisation.vmVariant.environment.etc =
+            lib.foldl'
+              (acc: user:
+                lib.foldl'
+                  (acc2: fileName:
+                    let
+                      file     = userConfigs.${user}.homeFiles.${fileName};
+                      destPath = "home/${user}/${fileName}";
+                      src      = if file ? text
+                                 then pkgs.writeText "inline-${user}-${fileName}" file.text
+                                 else file.source;
+                    in
+                      acc2 // {
+                        "${destPath}" = {
+                          source = src;
+                          mode   = file.mode;
+                        };
+                      }
+                  )
+                  acc
+                  (lib.attrNames userConfigs.${user}.homeFiles)
+              )
+              {}
+              (lib.attrNames userConfigs);
+
+          system.stateVersion = "24.11";     # версията на NixOS
+        }
+      ];
+    };
+
+    # локална активация
+    packages.${system} = {
+      # ползваме скриптовете от модула
+      activate-testuser = pkgs.writeShellScriptBin "activate-home-testuser" ''
+        /etc/profiles/per-user/testuser/bin/setupHome_testuser
+      '';
+      activate-john = pkgs.writeShellScriptBin "activate-home-john" ''
+        /etc/profiles/per-user/john/bin/setupHome_john
+      '';
+    };
+
+    apps.${system}.default = {
+      type    = "app";
+      program = "${self.packages.${system}.activate-testuser}/bin/activate-home-testuser";
+    };
+  };
 }
 
