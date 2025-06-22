@@ -1,78 +1,101 @@
-		{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, ... }:
 
-		with lib;
-		with lib.types;
+with lib;
+with lib.types;
 
-		let
-		  # Функция: символна връзка + chmod
-		  generateLink = uname: fileName: file:
-		    let
-		      homePath = "/home/${uname}/${fileName}";
+let
+  #  Функция за линкване на файл в home директорията 
+  generateLink = uname: fileName: file:
+    let
+      homePath = "/home/${uname}/${fileName}";  # Къде ще бъде линкнат 
 
-		      # Определяне на източника: текст или съществуващ файл
-		      target =
-			if file?text && file.text != null then
-			  pkgs.writeText "homefile-${uname}-${baseNameOf fileName}" file.text
-			else if file?source && file.source != null then
-			  file.source
-			else
-			  throw "homeFiles.${fileName} трябва да има text или source.";
+      #  Избираме източника на файла: текст или път до друг файл
+      target =
+        if file?text && file.text != null then
+          pkgs.writeText "homefile-${uname}-${baseNameOf fileName}" file.text
+        else if file?source && file.source != null then
+          file.source
+        else
+          throw "homeFiles.${fileName} трябва да има text или source.";
 
-		      isStorePath = lib.hasPrefix "/nix/store" (toString target);
-		      modeLine = if file?mode && !isStorePath then
-			"chmod ${file.mode} \"${homePath}\""
-		      else
-			"";
-		    in
-		      ''
-			echo "[homeSetup] Linking ${homePath} -> ${target}" >> /home/${uname}/.home-setup.log
-			ln -sf ${target} "${homePath}"
-			${modeLine}
-		      '';
+      #  Проверка дали файлът вече е в /nix/store
+      isStorePath = lib.hasPrefix "/nix/store" (toString target);
 
-		in
-		{
-		  options.homeSetups = mkOption {
-		    type = attrsOf (submodule ({ name, ... }: {
-		      options = {
-			# Параметри за всеки потребител
-			userName = mkOption {
-			  type        = str;
-			  description = "Username for whom the home files are being setup.";
-			  default     = name;
-			};
-			homeFiles = mkOption {
-			  type = attrsOf (submodule {
-			    options = {
-			      text   = mkOption { type = nullOr str; default = null; };
-			      source = mkOption { type = nullOr path; default = null; };
-			      mode   = mkOption { type = str;      default = "644"; };
-			    };
-			  });
-			  default     = {};
-			  description = "Map of files to link into the user's $HOME.";
-			};
-		      };
-		    }));
-		  };
+      #  Ако не е от /nix/store и има зададен режим, слагаме chmod
+      modeLine = if file?mode && !isStorePath then
+        "chmod ${file.mode} \"${homePath}\""
+      else
+        "";
+    in
+      # shell код за логване, линкване и задаване на права
+      ''
+        echo "[homeSetup] Linking ${homePath} -> ${target}" >> /home/${uname}/.home-setup.log
+        ln -sf ${target} "${homePath}"
+        ${modeLine}
+      '';
+in {
+  options = {
+    # нова NixOS опция `homeSetups`
+    homeSetups = mkOption {
+      type = attrsOf (submodule ({ name, ... }: {
+        options = {
+          userName = mkOption {
+            type = str;
+            description = "Името на потребителя";
+            default = name;
+          };
+          homeFiles = mkOption {
+            type = attrsOf (submodule {
+              options = {
+                text   = mkOption { type = nullOr str; default = null; };
+                source = mkOption { type = nullOr path; default = null; };
+                mode   = mkOption { type = str; default = "644"; };
+              };
+            });
+            default = {};
+            description = "Файлове, които се добавят в $HOME на потребителя";
+          };
+        };
+      }));
+    };
+  
+  
+    generatedSetupScripts = mkOption {
+    type = attrsOf package;
+    readOnly = true;
+    description = "Generated setup scripts for each user.";
+  };
+};
 
-		  config.system.userActivationScripts =
-		    lib.flip lib.mapAttrs' config.homeSetups (user: { userName, homeFiles }: lib.nameValuePair ("setupHome_${userName}") {
-		      text = ''
-			set -e
-			echo "[homeSetup] Running for ${userName}" >> /home/${userName}/.home-setup.log
 
-			  # Линкваме всички файлове, включително .bashrc
-			 ${concatStringsSep "\n"
-		  	(mapAttrsToList
-		    	(name: value:
-		      	generateLink userName name value)
-		    	homeFiles)
-			}
+  config = {
+    # Скриптове, достъпни през vmSystem.config.generatedSetupScripts
+    generatedSetupScripts = lib.mapAttrs (user: value:
+      pkgs.writeShellScriptBin "setupHome_${user}" ''
+        set -e
+        mkdir -p /home/${user}
+        touch /home/${user}/.home-setup.log
+        echo "[homeSetup] Running for ${user}" >> /home/${user}/.home-setup.log
+        ${lib.concatStringsSep "\n"
+          (lib.mapAttrsToList (name: file: generateLink user name file) value.homeFiles)}
+        echo "[homeSetup] Done for ${user}" >> /home/${user}/.home-setup.log
+      ''
+    ) config.homeSetups;
 
-			echo "[homeSetup] Done for ${userName}" >> /home/${userName}/.home-setup.log
-		      '';
-		      deps = [];
-		    });
+    # Скриптове, които се изпълняват автоматично при login
+    system.userActivationScripts =
+      lib.flip lib.mapAttrs' config.homeSetups
+        (user: { userName, homeFiles }:
+          lib.nameValuePair ("setupHome_${userName}") {
+            text = ''
+              set -e
+              echo "[homeSetup] Running for ${userName}" >> /home/${userName}/.home-setup.log
+              ${concatStringsSep "\n"
+                (mapAttrsToList (name: value: generateLink userName name value) homeFiles)}
+              echo "[homeSetup] Done for ${userName}" >> /home/${userName}/.home-setup.log
+            '';
+            deps = [];
+          });
+  };
+}
 
-		}
