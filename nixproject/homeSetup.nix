@@ -3,99 +3,93 @@
 with lib;
 with lib.types;
 
-let
-  #  Функция за линкване на файл в home директорията 
-  generateLink = uname: fileName: file:
+{
+   #homeSetups във флейка
+  options.homeSetups = mkOption {
+    type = attrsOf (submodule ({ name, ... }: 
     let
-      homePath = "/home/${uname}/${fileName}";  # Къде ще бъде линкнат 
+    userName=name;
 
-      #  Избираме източника на файла: текст или път до друг файл
-      target =
-        if file?text && file.text != null then
-          pkgs.writeText "homefile-${uname}-${baseNameOf fileName}" file.text
-        else if file?source && file.source != null then
-          file.source
-        else
-          throw "homeFiles.${fileName} трябва да има text или source.";
-
-      #  Проверка дали файлът вече е в /nix/store
-      isStorePath = lib.hasPrefix "/nix/store" (toString target);
-
-      #  Ако не е от /nix/store и има зададен режим, слагаме chmod
-      modeLine = if file?mode && !isStorePath then
-        "chmod ${file.mode} \"${homePath}\""
-      else
-        "";
-    in
-      # shell код за логване, линкване и задаване на права
-      ''
-        echo "[homeSetup] Linking ${homePath} -> ${target}" >> /home/${uname}/.home-setup.log
-        ln -sf ${target} "${homePath}"
-        ${modeLine}
-      '';
-in {
-  options = {
-    # нова NixOS опция `homeSetups`
-    homeSetups = mkOption {
-      type = attrsOf (submodule ({ name, ... }: {
-        options = {
-          userName = mkOption {
-            type = str;
-            description = "Името на потребителя";
-            default = name;
-          };
-          homeFiles = mkOption {
-            type = attrsOf (submodule {
-              options = {
-                text   = mkOption { type = nullOr str; default = null; };
-                source = mkOption { type = nullOr path; default = null; };
-                mode   = mkOption { type = str; default = "644"; };
-              };
-            });
-            default = {};
-            description = "Файлове, които се добавят в $HOME на потребителя";
-          };
+    in {
+      options = {
+        userName = mkOption {
+          type = str; default = name;
+          description = "Име на потребителя";
         };
-      }));
-    };
-  
-  
-    generatedSetupScripts = mkOption {
+	#какви файлове се подават
+        homeFiles = mkOption {
+          type = attrsOf (submodule ({config, name, ... }: {
+            options = {
+              text   = mkOption { type = nullOr str;  default = null; };
+              source = mkOption { type = nullOr path; default = lib.mapNullable (text:
+                pkgs.runCommand "homefile-${userName}-${lib.escapeShellArg name}" { } ''
+                  echo ${lib.escapeShellArg text} > $out
+                  chmod ${config.mode} $out
+                ''
+              ) config.text; };
+              mode   = mkOption { type = str;         default = "644"; };
+            };
+          }));
+          default = {};
+          description = "Файлове, които се добавят в \$HOME директорията";
+        };
+      };
+    }));
+  };
+
+  options.generatedSetupScripts = mkOption {
     type = attrsOf package;
     readOnly = true;
-    description = "Generated setup scripts for each user.";
+    description = "Генерирани скриптове за настройка на home директорията";
   };
-};
+
+  config.generatedSetupScripts = lib.mapAttrs (user: cfg:
+    pkgs.writeShellScriptBin "setupHome_${user}" ''
+      #!/usr/bin/env bash
+      # TODO: problems?
+      # set -euo pipefail
+     
+       if [ "$(id -u -n)" == ${user} ]; then
+        USER_HOME="/home/${user}"
+        ${lib.pipe cfg.homeFiles [
+          (lib.mapAttrsToList (filePath: { mode, source, ... }: ''
+            # Linking ${filePath}
+            link=~${user}/${lib.escapeShellArg filePath}
+            if [ -L $link ]; then
+              # It's a symlink – remove it
+              unlink $link
+              ln -s "${source}" $link
+            elif [ ! -e $link ]; then
+              # Doesn't exist at all – just create the symlink
+              mkdir -p "$(dirname $link)"
+              ln -s "${source}" $link
+            else
+              # Exists and is not a symlink – don't touch
+              echo "Not a symlink, not touching: $link" >&2
+              exit 1
+            fi
+          ''))
+          (lib.concatStringsSep "\n")
+        ]}
+
+        # Слагаме флаг, че setup е приключил
+        touch "$USER_HOME/.home-setup.done"
+      fi
+    ''
+  ) config.homeSetups;
+
+    config.environment.systemPackages =
+    builtins.attrValues config.generatedSetupScripts;
 
 
-  config = {
-    # Скриптове, достъпни през vmSystem.config.generatedSetupScripts
-    generatedSetupScripts = lib.mapAttrs (user: value:
-      pkgs.writeShellScriptBin "setupHome_${user}" ''
-        set -e
-        mkdir -p /home/${user}
-        touch /home/${user}/.home-setup.log
-        echo "[homeSetup] Running for ${user}" >> /home/${user}/.home-setup.log
-        ${lib.concatStringsSep "\n"
-          (lib.mapAttrsToList (name: file: generateLink user name file) value.homeFiles)}
-        echo "[homeSetup] Done for ${user}" >> /home/${user}/.home-setup.log
-      ''
-    ) config.homeSetups;
 
-    # Скриптове, които се изпълняват автоматично при login
-    system.userActivationScripts =
-      lib.flip lib.mapAttrs' config.homeSetups
-        (user: { userName, homeFiles }:
-          lib.nameValuePair ("setupHome_${userName}") {
-            text = ''
-              set -e
-              echo "[homeSetup] Running for ${userName}" >> /home/${userName}/.home-setup.log
-              ${concatStringsSep "\n"
-                (mapAttrsToList (name: value: generateLink userName name value) homeFiles)}
-              echo "[homeSetup] Done for ${userName}" >> /home/${userName}/.home-setup.log
-            '';
-            deps = [];
-          });
-  };
+  # Активираме скрипта 
+  config.system.userActivationScripts =
+    lib.mapAttrs (_: pkg: {
+      text = ''
+        exec ${lib.getExe pkg}
+      '';
+      deps = [];
+    }) config.generatedSetupScripts;
 }
 
