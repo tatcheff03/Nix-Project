@@ -147,7 +147,6 @@
 
       #  Активат. скриптове
       activate-testuser = pkgs.writeShellScriptBin "activate-home-testuser" ''
-        rm -f /home/testuser/.home-setup.done
         exec ${vmSystem.config.generatedSetupScripts.testuser}/bin/setupHome_testuser
       '';
 
